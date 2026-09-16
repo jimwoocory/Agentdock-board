@@ -2,15 +2,29 @@ from __future__ import annotations
 
 import os
 import uuid
-from typing import Any, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
 
 import httpx
 
 
+ActionHandler = Callable[[dict[str, Any]], dict[str, Any] | None]
+
+
 class BoardClient:
     def __init__(self, base_url: str | None = None, timeout: float = 5.0) -> None:
-        self.base_url = (base_url or os.getenv("AGENTDOCK_BOARD_URL") or "http://127.0.0.1:8765").rstrip("/")
+        self.base_url = (
+            base_url
+            or os.getenv("AGENTDOCK_BOARD_URL")
+            or "http://127.0.0.1:8765"
+        ).rstrip("/")
         self.timeout = timeout
+
+    def health(self) -> dict[str, Any]:
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.get(f"{self.base_url}/api/health")
+            response.raise_for_status()
+            return response.json()
 
     def emit(
         self,
@@ -49,11 +63,16 @@ class BoardClient:
         *,
         consumer: str = "agentdock",
         limit: int = 50,
+        lease_seconds: int = 30,
     ) -> list[dict[str, Any]]:
         with httpx.Client(timeout=self.timeout) as client:
             response = client.get(
                 f"{self.base_url}/api/actions/pending",
-                params={"consumer": consumer, "limit": limit},
+                params={
+                    "consumer": consumer,
+                    "limit": limit,
+                    "lease_seconds": lease_seconds,
+                },
             )
             response.raise_for_status()
             return response.json()["actions"]
@@ -75,12 +94,18 @@ class BoardClient:
 
     def consume_actions(
         self,
-        handler,
+        handler: ActionHandler,
         *,
         consumer: str = "agentdock",
         limit: int = 50,
+        lease_seconds: int = 30,
     ) -> Iterable[dict[str, Any]]:
-        for action in self.pending_actions(consumer=consumer, limit=limit):
+        actions = self.pending_actions(
+            consumer=consumer,
+            limit=limit,
+            lease_seconds=lease_seconds,
+        )
+        for action in actions:
             try:
                 result = handler(action)
                 if result is None:
