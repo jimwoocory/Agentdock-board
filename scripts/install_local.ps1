@@ -27,20 +27,95 @@ function Resolve-AgentDockHome {
     return $null
 }
 
+function Test-PythonCandidate {
+    param(
+        [string]$Command,
+        [string[]]$PrefixArgs = @()
+    )
+
+    try {
+        $args = @()
+        $args += $PrefixArgs
+        $args += @(
+            "-c",
+            "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 7)"
+        )
+        & $Command @args *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
 function Resolve-PythonLauncher {
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        return [PSCustomObject]@{
-            Command = "py"
-            PrefixArgs = @("-3.11")
+        if (Test-PythonCandidate -Command "py" -PrefixArgs @("-3")) {
+            return [PSCustomObject]@{
+                Command = "py"
+                PrefixArgs = @("-3")
+            }
         }
     }
+
     if (Get-Command python -ErrorAction SilentlyContinue) {
-        return [PSCustomObject]@{
-            Command = "python"
-            PrefixArgs = @()
+        if (Test-PythonCandidate -Command "python") {
+            return [PSCustomObject]@{
+                Command = "python"
+                PrefixArgs = @()
+            }
         }
     }
-    throw "Python 3.11+ was not found. Install Python first, then run this installer again."
+
+    if (Get-Command python3 -ErrorAction SilentlyContinue) {
+        if (Test-PythonCandidate -Command "python3") {
+            return [PSCustomObject]@{
+                Command = "python3"
+                PrefixArgs = @()
+            }
+        }
+    }
+
+    return $null
+}
+
+function Install-PythonIfNeeded {
+    $launcher = Resolve-PythonLauncher
+    if ($launcher) {
+        return $launcher
+    }
+
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        throw "No usable Python 3.11+ was found, and winget is unavailable. Install Python 3.12+ and retry."
+    }
+
+    Write-Host "[AgentDock Board] Python 3.11+ not found. Installing Python 3.12..."
+    & winget install --id Python.Python.3.12 -e --scope user `
+        --accept-package-agreements --accept-source-agreements --silent
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python 3.12 installation failed with exit code $LASTEXITCODE."
+    }
+
+    $paths = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Python\Python312\python.exe"),
+        (Join-Path $env:ProgramFiles "Python312\python.exe")
+    )
+    foreach ($path in $paths) {
+        if ((Test-Path $path) -and (Test-PythonCandidate -Command $path)) {
+            return [PSCustomObject]@{
+                Command = $path
+                PrefixArgs = @()
+            }
+        }
+    }
+
+    $env:Path = [Environment]::GetEnvironmentVariable("Path", "User") + ";" +
+        [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $launcher = Resolve-PythonLauncher
+    if ($launcher) {
+        return $launcher
+    }
+
+    throw "Python 3.12 was installed but could not be resolved. Close this window and rerun the installer."
 }
 
 $agentDockHome = Resolve-AgentDockHome
@@ -66,21 +141,38 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 if (Test-Path (Join-Path $InstallRoot ".git")) {
     Write-Host "[AgentDock Board] Updating existing checkout..."
     & git -C $InstallRoot pull --ff-only
+    if ($LASTEXITCODE -ne 0) {
+        throw "git pull failed with exit code $LASTEXITCODE."
+    }
 } elseif (Test-Path $InstallRoot) {
     $items = Get-ChildItem -Force $InstallRoot -ErrorAction SilentlyContinue
     if ($items.Count -gt 0) {
         throw "Install root exists and is not an Agentdock-board git checkout: $InstallRoot"
     }
     & git clone $RepoUrl $InstallRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "git clone failed with exit code $LASTEXITCODE."
+    }
 } else {
     $parent = Split-Path -Parent $InstallRoot
     New-Item -ItemType Directory -Force -Path $parent | Out-Null
     & git clone $RepoUrl $InstallRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "git clone failed with exit code $LASTEXITCODE."
+    }
 }
 
-$pythonLauncher = Resolve-PythonLauncher
+$pythonLauncher = Install-PythonIfNeeded
+Write-Host "[AgentDock Board] Python launcher: $($pythonLauncher.Command) $($pythonLauncher.PrefixArgs -join ' ')"
+
 $venv = Join-Path $InstallRoot ".venv"
-if (-not (Test-Path $venv)) {
+$python = Join-Path $venv "Scripts\python.exe"
+if ((Test-Path $venv) -and -not (Test-Path $python)) {
+    Write-Host "[AgentDock Board] Removing incomplete virtual environment..."
+    Remove-Item -Recurse -Force $venv
+}
+
+if (-not (Test-Path $python)) {
     Write-Host "[AgentDock Board] Creating Python virtual environment..."
     $pythonCommand = $pythonLauncher.Command
     $venvArgs = @()
@@ -92,7 +184,6 @@ if (-not (Test-Path $venv)) {
     }
 }
 
-$python = Join-Path $venv "Scripts\python.exe"
 if (-not (Test-Path $python)) {
     throw "Virtual environment Python was not created: $python"
 }
@@ -144,7 +235,6 @@ if (-not $alreadyRunning) {
                 break
             }
         } catch {
-            # Keep waiting until the service becomes healthy.
         }
     }
     if (-not $ready) {
