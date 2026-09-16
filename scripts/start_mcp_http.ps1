@@ -20,5 +20,6 @@ if (-not $env:AGENTDOCK_BOARD_MCP_HOST) { $env:AGENTDOCK_BOARD_MCP_HOST = '127.0
 if (-not $env:AGENTDOCK_BOARD_MCP_PORT) { $env:AGENTDOCK_BOARD_MCP_PORT = '8766' }
 if (-not $env:AGENTDOCK_BOARD_MCP_PATH) { $env:AGENTDOCK_BOARD_MCP_PATH = '/mcp' }
 
+$mcp = Join-Path $repo '.venv\Scripts\agentdock-board-mcp-http.exe'
 Write-Host "Task Board MCP starting on http://$($env:AGENTDOCK_BOARD_MCP_HOST):$($env:AGENTDOCK_BOARD_MCP_PORT)$($env:AGENTDOCK_BOARD_MCP_PATH)"
-& $python -m agentdock_board.mcp_server_http
+& $mcp
