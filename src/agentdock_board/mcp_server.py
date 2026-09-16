@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -45,7 +46,23 @@ def taskboard_request_action(
 
 
 def run() -> None:
+    """Run the local stdio MCP server."""
     mcp.run()
+
+
+def run_http() -> None:
+    """Run MCP over Streamable HTTP for an AgentDock/Developer-MCP host."""
+    host = os.getenv("AGENTDOCK_BOARD_MCP_HOST", "127.0.0.1")
+    port = int(os.getenv("AGENTDOCK_BOARD_MCP_PORT", "8766"))
+    path = os.getenv("AGENTDOCK_BOARD_MCP_PATH", "/mcp")
+    if not path.startswith("/"):
+        path = f"/{path}"
+    mcp.run(
+        transport="streamable-http",
+        host=host,
+        port=port,
+        streamable_http_path=path,
+    )
 
 
 if __name__ == "__main__":
