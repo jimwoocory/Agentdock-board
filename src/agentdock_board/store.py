@@ -140,9 +140,30 @@ class Store:
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                existing = conn.execute(
+                    "SELECT sequence, task_id FROM events WHERE source=? AND source_event_id=?",
+                    (source, source_event_id),
+                ).fetchone()
+
+                if existing is not None:
+                    sequence = int(existing["sequence"])
+                    existing_task_id = str(existing["task_id"])
+                    task = self._task_row(
+                        conn.execute(
+                            "SELECT * FROM tasks WHERE task_id=?",
+                            (existing_task_id,),
+                        ).fetchone()
+                    )
+                    conn.commit()
+                    return {
+                        "sequence": sequence,
+                        "duplicate": True,
+                        "task": task,
+                    }
+
                 cursor = conn.execute(
                     """
-                    INSERT OR IGNORE INTO events
+                    INSERT INTO events
                         (source, source_event_id, task_id, type, payload_json, created_at)
                     VALUES (?, ?, ?, ?, ?, ?)
                     """,
@@ -155,17 +176,8 @@ class Store:
                         created_at,
                     ),
                 )
-
-                duplicate = cursor.rowcount == 0
-                if duplicate:
-                    row = conn.execute(
-                        "SELECT sequence FROM events WHERE source=? AND source_event_id=?",
-                        (source, source_event_id),
-                    ).fetchone()
-                    sequence = int(row["sequence"])
-                else:
-                    sequence = int(cursor.lastrowid)
-                    self._apply_projection(conn, sequence, payload)
+                sequence = int(cursor.lastrowid)
+                self._apply_projection(conn, sequence, payload)
 
                 task = self._task_row(
                     conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
@@ -173,7 +185,7 @@ class Store:
                 conn.commit()
                 return {
                     "sequence": sequence,
-                    "duplicate": duplicate,
+                    "duplicate": False,
                     "task": task,
                 }
             except Exception:
