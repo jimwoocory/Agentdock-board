@@ -146,8 +146,15 @@ async def create_action(task_id: str, body: ActionIn) -> dict[str, Any]:
 def pending_actions(
     consumer: str = Query(default="agentdock", min_length=1),
     limit: int = Query(default=50, ge=1, le=500),
+    lease_seconds: int = Query(default=30, ge=5, le=3600),
 ) -> dict[str, Any]:
-    return {"actions": store.pending_actions(consumer=consumer, limit=limit)}
+    return {
+        "actions": store.pending_actions(
+            consumer=consumer,
+            limit=limit,
+            lease_seconds=lease_seconds,
+        )
+    }
 
 
 @app.post("/api/actions/{action_id}/ack")
