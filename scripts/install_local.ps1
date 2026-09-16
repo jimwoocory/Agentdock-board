@@ -29,10 +29,16 @@ function Resolve-AgentDockHome {
 
 function Resolve-PythonLauncher {
     if (Get-Command py -ErrorAction SilentlyContinue) {
-        return @("py", "-3.11")
+        return [PSCustomObject]@{
+            Command = "py"
+            PrefixArgs = @("-3.11")
+        }
     }
     if (Get-Command python -ErrorAction SilentlyContinue) {
-        return @("python")
+        return [PSCustomObject]@{
+            Command = "python"
+            PrefixArgs = @()
+        }
     }
     throw "Python 3.11+ was not found. Install Python first, then run this installer again."
 }
@@ -76,17 +82,30 @@ $pythonLauncher = Resolve-PythonLauncher
 $venv = Join-Path $InstallRoot ".venv"
 if (-not (Test-Path $venv)) {
     Write-Host "[AgentDock Board] Creating Python virtual environment..."
-    if ($pythonLauncher.Count -eq 2) {
-        & $pythonLauncher[0] $pythonLauncher[1] -m venv $venv
-    } else {
-        & $pythonLauncher[0] -m venv $venv
+    $pythonCommand = $pythonLauncher.Command
+    $venvArgs = @()
+    $venvArgs += $pythonLauncher.PrefixArgs
+    $venvArgs += @("-m", "venv", $venv)
+    & $pythonCommand @venvArgs
+    if ($LASTEXITCODE -ne 0) {
+        throw "Python virtual environment creation failed with exit code $LASTEXITCODE."
     }
 }
 
 $python = Join-Path $venv "Scripts\python.exe"
+if (-not (Test-Path $python)) {
+    throw "Virtual environment Python was not created: $python"
+}
+
 Write-Host "[AgentDock Board] Installing/updating local package..."
 & $python -m pip install --upgrade pip
+if ($LASTEXITCODE -ne 0) {
+    throw "pip upgrade failed with exit code $LASTEXITCODE."
+}
 & $python -m pip install -e $InstallRoot
+if ($LASTEXITCODE -ne 0) {
+    throw "AgentDock Board package install failed with exit code $LASTEXITCODE."
+}
 
 $dataDir = Join-Path $InstallRoot "data"
 New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
