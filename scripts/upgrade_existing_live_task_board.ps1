@@ -141,8 +141,9 @@ if ((Test-Path $venv) -and -not (Test-Path $venvPython)) {
 }
 if (-not (Test-Path $venvPython)) {
     Write-Host "[Board 2.0] Creating virtual environment..."
-    $args = @($launcher.PrefixArgs) + @("-m", "venv", $venv)
-    & $launcher.Command @args
+    $pythonCommand = $launcher.Command
+    $venvArgs = @($launcher.PrefixArgs) + @("-m", "venv", $venv)
+    & $pythonCommand @venvArgs
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPython)) {
         throw "Virtual environment creation failed."
     }
@@ -209,6 +210,7 @@ $v2State = [ordered]@{
     version = "2.0"
     mode = "legacy-bridge"
     board_url = $boardUrl
+    port = $port
     database = $dbPath
     legacy_dir = $LegacyDir
     runtime = $RuntimeRoot
