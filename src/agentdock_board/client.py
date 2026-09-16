@@ -26,6 +26,38 @@ class BoardClient:
             response.raise_for_status()
             return response.json()
 
+    def tasks(self, *, limit: int = 200) -> dict[str, Any]:
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.get(
+                f"{self.base_url}/api/tasks",
+                params={"limit": limit},
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def events(self, *, after_sequence: int = 0, limit: int = 500) -> dict[str, Any]:
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.get(
+                f"{self.base_url}/api/events",
+                params={"after_sequence": after_sequence, "limit": limit},
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def request_action(
+        self,
+        task_id: str,
+        action: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.post(
+                f"{self.base_url}/api/tasks/{task_id}/actions",
+                json={"action": action, "payload": payload or {}},
+            )
+            response.raise_for_status()
+            return response.json()
+
     def emit(
         self,
         *,
