@@ -1,8 +1,8 @@
 # AgentDock Task Board 2.0
 
-A small, persistent realtime task board for AgentDock/Harness/Hermes workflows.
+A persistent realtime task board for AgentDock/Harness/Hermes workflows.
 
-The board is intentionally separated from AgentDock's UI. AgentDock only needs to emit task events; this service stores them, builds a durable read model, streams updates to the browser, and queues user actions back to the executor.
+The board is intentionally separated from AgentDock's UI. AgentDock emits real task events; this service stores them, builds a durable read model, streams updates to the browser, queues user actions back to the executor, and exposes the same state through MCP.
 
 ## What this solves
 
@@ -10,8 +10,11 @@ The board is intentionally separated from AgentDock's UI. AgentDock only needs t
 - The UI is backed by a persisted read model instead of fake/static progress.
 - Task state changes are pushed to the browser through WebSocket.
 - Refresh/reconnect reconstructs the board from SQLite.
-- User actions (`retry`, `cancel`, `pause`, `resume`, `open`, custom actions) are stored in an auditable queue for AgentDock to consume.
+- User actions (`retry`, `cancel`, `pause`, `resume`) are stored in an auditable queue for AgentDock to consume.
+- Action claims use leases, so a crashed AgentDock worker does not permanently lose an operation.
+- Failed tasks can be retried back to `running`; completed/cancelled tasks stay terminal.
 - Events are idempotent by `(source, source_event_id)` and ordered by a server-side sequence.
+- ChatGPT/other MCP hosts can read and control the same task model through stable MCP tools.
 
 ## Event flow
 
@@ -28,14 +31,16 @@ AgentDock / Harness / Hermes
           +---- GET /api/tasks
           |
           +---- WebSocket /ws
+          |
+          +---- MCP taskboard_get / taskboard_sync
           v
       Task Board 2.0
 
-Task Board action
+Task Board / MCP action
           |
           | POST /api/tasks/{task_id}/actions
           v
-  pending action queue
+ durable leased action queue
           |
           | GET /api/actions/pending
           v
@@ -44,7 +49,7 @@ AgentDock executor -> ACK /api/actions/{action_id}/ack
 
 ## Supported task events
 
-`created`, `assigned`, `running`, `progress`, `blocked`, `completed`, `failed`, `cancelled`, `paused`, `resumed`, `message`.
+`created`, `assigned`, `running`, `progress`, `blocked`, `completed`, `failed`, `cancelled`, `paused`, `resumed`, `retrying`, `message`.
 
 Each event may contain:
 
@@ -57,6 +62,14 @@ Each event may contain:
 ## Run locally
 
 Requires Python 3.11+.
+
+### Windows one-click start
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start_board.ps1
+```
+
+### Generic Python
 
 ```bash
 python -m venv .venv
@@ -84,52 +97,88 @@ Environment variables:
 AGENTDOCK_BOARD_HOST=127.0.0.1
 AGENTDOCK_BOARD_PORT=8765
 AGENTDOCK_BOARD_DB=./data/taskboard.db
+AGENTDOCK_BOARD_URL=http://127.0.0.1:8765
 ```
 
-Keep the default loopback binding unless you intentionally put the service behind a trusted reverse proxy/VPN.
+Keep the default loopback binding unless you intentionally put the service behind a trusted AgentDock/MCP/VPN layer.
 
-## Quick event test
+## Smoke test
+
+With the board running:
 
 ```bash
-python scripts/agentdock_emit.py created tsk_demo --title "MediaGo Final Review" --owner "project-lead"
-python scripts/agentdock_emit.py running tsk_demo --progress 10 --message "Opening real workspace"
-python scripts/agentdock_emit.py progress tsk_demo --progress 55 --message "Reviewing shot plan and generation task pages"
-python scripts/agentdock_emit.py completed tsk_demo --progress 100 --message "Final Review passed"
+python scripts/smoke_test.py
 ```
 
-The helper sends to `http://127.0.0.1:8765` by default. Override with `AGENTDOCK_BOARD_URL`.
+A successful run prints `SMOKE_OK task_id=...` and the server sequence.
 
-## AgentDock integration contract
+## AgentDock integration
 
-At the point where AgentDock's task engine changes state, emit one event. Do **not** let the browser infer task state from logs.
-
-Python example:
+Preferred lifecycle adapter:
 
 ```python
-from agentdock_board.client import BoardClient
+from agentdock_board.integration import TaskReporter
 
-board = BoardClient()
-board.emit(
+reporter = TaskReporter(
     task_id=task.id,
-    event_type="running",
     title=task.title,
     owner=task.owner,
-    progress=task.progress,
-    message="visual_review",
+    metadata={"project": task.project_id},
 )
+
+reporter.created("accepted")
+reporter.running(progress=10, message="visual_review")
+reporter.progress(55, "reviewing generation task page")
+reporter.completed("Final Review passed")
 ```
 
-For actions, AgentDock polls `GET /api/actions/pending?consumer=agentdock` (or uses a future push adapter), executes the action, then ACKs it.
+Preferred action consumer:
 
-## Acceptance criteria for Board 2.0
+```python
+from agentdock_board.integration import ActionWorker
 
-1. Start a real task in AgentDock; it appears on the board after the first event.
-2. Progress/status changes update without refreshing the page.
-3. Browser refresh/reconnect does not erase tasks.
-4. Restarting the board service reconstructs tasks from SQLite.
-5. Clicking an action creates a durable pending action that AgentDock can consume and ACK.
-6. Duplicate event delivery does not duplicate progress/state transitions.
-7. The board only displays real persisted task state; no simulated timers or fabricated progress.
+
+def execute_board_action(item):
+    action = item["action"]
+    task_id = item["task_id"]
+    if action == "pause":
+        task_manager.pause(task_id)
+    elif action == "resume":
+        task_manager.resume(task_id)
+    elif action == "retry":
+        task_manager.retry(task_id)
+    elif action == "cancel":
+        task_manager.cancel(task_id)
+    else:
+        raise ValueError(action)
+    return {"task_id": task_id, "action": action}
+
+
+ActionWorker(execute_board_action, consumer="agentdock").start_daemon()
+```
+
+If AgentDock dies after claiming an action, the action lease expires and another restored worker can claim it again.
+
+See `AGENTDOCK_INTEGRATION.md` for the full production mapping and acceptance test.
+
+## MCP surface for ChatGPT / MCP hosts
+
+After installing the package, the stdio MCP command is:
+
+```text
+agentdock-board-mcp
+```
+
+It expects the board HTTP service to be reachable at `AGENTDOCK_BOARD_URL` (default `http://127.0.0.1:8765`).
+
+Exposed MCP tools:
+
+- `taskboard_health()` — health, task count, latest sequence.
+- `taskboard_get(limit=200)` — current persisted task read model.
+- `taskboard_sync(after_sequence=0, limit=500)` — events after a known sequence.
+- `taskboard_request_action(task_id, action, payload)` — durable `pause/resume/retry/cancel` request.
+
+This MCP layer does not invent task state. It reads the same persisted model used by the browser board.
 
 ## API summary
 
@@ -138,11 +187,24 @@ For actions, AgentDock polls `GET /api/actions/pending?consumer=agentdock` (or u
 - `GET /api/tasks`
 - `GET /api/tasks/{task_id}`
 - `POST /api/tasks/{task_id}/actions`
-- `GET /api/actions/pending`
+- `GET /api/actions/pending?consumer=agentdock&lease_seconds=30`
 - `POST /api/actions/{action_id}/ack`
 - `GET /api/events?after_sequence=N`
 - `WS /ws`
 
-## Current scope
+## Acceptance criteria for Board 2.0
 
-This repository contains the realtime board service and the integration contract. It does not pretend to control AgentDock by itself: AgentDock must emit its real task events and consume actions. The included client and CLI are the bridge points to wire into the existing AgentDock task engine.
+1. Start a real MediaGo task in AgentDock; it appears after the first real event.
+2. Progress/status changes update without refreshing the page.
+3. Browser refresh/reconnect does not erase tasks.
+4. Restarting the board service reconstructs tasks from SQLite.
+5. Clicking an action creates a durable action AgentDock consumes and ACKs.
+6. Kill the action worker after a claim; the expired action is re-delivered after recovery.
+7. A failed task can be retried and return to `running`.
+8. MCP `taskboard_get` returns the same task state shown in the browser.
+9. Duplicate event delivery does not duplicate progress/state transitions.
+10. The board only displays persisted task state; no simulated timers or fabricated progress.
+
+## Current boundary
+
+This repository now contains the durable task service, browser board, AgentDock lifecycle/action adapters, Windows startup helper, tests/CI, and MCP surface. The remaining production step is to wire `TaskReporter` and `ActionWorker` into the actual AgentDock task engine process so the board receives its real task lifecycle and can send actions back to it.
