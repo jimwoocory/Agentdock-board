@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AgentDock Task Board 2.0</title>
+  <style>
+    :root {
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #edf2f7;
+      background: #0d1117;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #0d1117; }
+    header {
+      display: flex; align-items: center; justify-content: space-between; gap: 18px;
+      padding: 18px 24px; position: sticky; top: 0; z-index: 20;
+      border-bottom: 1px solid #273043; background: rgba(13,17,23,.96);
+    }
+    h1 { margin: 0; font-size: 18px; letter-spacing: .2px; }
+    .sub { color: #8b98ab; font-size: 12px; margin-top: 3px; }
+    .health { display: flex; align-items: center; gap: 8px; color: #aab4c2; font-size: 12px; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #d29922; box-shadow: 0 0 12px rgba(210,153,34,.45); }
+    .dot.live { background: #2ea043; box-shadow: 0 0 12px rgba(46,160,67,.55); }
+    .dot.offline { background: #f85149; box-shadow: 0 0 12px rgba(248,81,73,.45); }
+    .toolbar {
+      display: flex; gap: 10px; align-items: center; padding: 14px 24px 0;
+    }
+    input, select, button {
+      border: 1px solid #303b4e; background: #151b24; color: #e6edf3;
+      border-radius: 8px; padding: 9px 11px; font: inherit;
+    }
+    input { min-width: 260px; }
+    button { cursor: pointer; }
+    button:hover { border-color: #53657f; background: #1b2430; }
+    .summary { margin-left: auto; color: #8b98ab; font-size: 12px; }
+    main { padding: 18px 24px 28px; }
+    .board { display: grid; grid-template-columns: repeat(4, minmax(240px, 1fr)); gap: 14px; align-items: start; }
+    .column { min-height: 240px; border: 1px solid #273043; border-radius: 12px; background: #10161f; overflow: hidden; }
+    .column-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 13px; border-bottom: 1px solid #273043; }
+    .column-head strong { font-size: 13px; }
+    .count { background: #202938; color: #9eacbf; border-radius: 999px; padding: 2px 8px; font-size: 11px; }
+    .cards { padding: 10px; display: grid; gap: 10px; }
+    .card { border: 1px solid #2b3546; background: #151b24; border-radius: 10px; padding: 12px; }
+    .card:hover { border-color: #40506a; }
+    .topline { display: flex; gap: 8px; align-items: flex-start; justify-content: space-between; }
+    .title { font-weight: 650; font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+    .status { font-size: 10px; border-radius: 999px; padding: 3px 7px; white-space: nowrap; background: #243047; color: #b9c4d3; }
+    .status.running { background: #123b2a; color: #64d997; }
+    .status.blocked, .status.failed { background: #47231f; color: #ff958c; }
+    .status.completed { background: #1b3421; color: #7ee787; }
+    .status.paused { background: #40351d; color: #e3b341; }
+    .meta { display: grid; gap: 4px; margin: 9px 0; color: #8b98ab; font-size: 11px; }
+    .message { color: #c7d1df; }
+    .progress-wrap { margin-top: 9px; }
+    .progress-label { display: flex; justify-content: space-between; color: #8b98ab; font-size: 10px; margin-bottom: 5px; }
+    .progress { height: 6px; border-radius: 999px; overflow: hidden; background: #242d3b; }
+    .bar { height: 100%; background: #3fb950; transition: width .25s ease; }
+    .actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .actions button { padding: 5px 8px; font-size: 10px; }
+    .taskid { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #6f7d91; font-size: 10px; }
+    .empty { color: #657286; font-size: 12px; text-align: center; padding: 28px 12px; }
+    #toast {
+      position: fixed; right: 20px; bottom: 20px; max-width: 360px; display: none;
+      border: 1px solid #344258; background: #17202c; color: #dbe4ee; border-radius: 9px; padding: 10px 12px; font-size: 12px;
+      box-shadow: 0 12px 30px rgba(0,0,0,.35); z-index: 100;
+    }
+    @media (max-width: 1050px) { .board { grid-template-columns: repeat(2, minmax(240px, 1fr)); } }
+    @media (max-width: 650px) {
+      header { padding: 14px; }
+      .toolbar { padding: 12px 14px 0; flex-wrap: wrap; }
+      input { min-width: 100%; width: 100%; }
+      .summary { margin-left: 0; }
+      main { padding: 14px; }
+      .board { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>AgentDock Task Board 2.0</h1>
+      <div class="sub">真实任务事件 · 持久化 Read Model · 实时交互</div>
+    </div>
+    <div class="health"><span id="dot" class="dot"></span><span id="connection">连接中</span><span id="sequence">seq 0</span></div>
+  </header>
+
+  <div class="toolbar">
+    <input id="search" placeholder="搜索任务、负责人、状态、消息…" />
+    <select id="filter">
+      <option value="all">全部状态</option>
+      <option value="active">仅进行中</option>
+      <option value="queued">Queued</option>
+      <option value="running">Running</option>
+      <option value="blocked">Blocked</option>
+      <option value="paused">Paused</option>
+      <option value="completed">Completed</option>
+      <option value="failed">Failed</option>
+      <option value="cancelled">Cancelled</option>
+    </select>
+    <button id="refresh">刷新快照</button>
+    <div id="summary" class="summary">0 tasks</div>
+  </div>
+
+  <main>
+    <div class="board">
+      <section class="column"><div class="column-head"><strong>进行中</strong><span id="count-active" class="count">0</span></div><div id="active" class="cards"></div></section>
+      <section class="column"><div class="column-head"><strong>阻塞 / 暂停</strong><span id="count-attention" class="count">0</span></div><div id="attention" class="cards"></div></section>
+      <section class="column"><div class="column-head"><strong>待执行</strong><span id="count-queued" class="count">0</span></div><div id="queued" class="cards"></div></section>
+      <section class="column"><div class="column-head"><strong>已结束</strong><span id="count-done" class="count">0</span></div><div id="done" class="cards"></div></section>
+    </div>
+  </main>
+  <div id="toast"></div>
+
+  <script>
+    const state = { tasks: new Map(), lastSequence: 0, socket: null, reconnectTimer: null, pingTimer: null };
+    const els = {
+      search: document.getElementById('search'), filter: document.getElementById('filter'), refresh: document.getElementById('refresh'),
+      dot: document.getElementById('dot'), connection: document.getElementById('connection'), sequence: document.getElementById('sequence'),
+      summary: document.getElementById('summary'), toast: document.getElementById('toast')
+    };
+
+    const esc = (value) => String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
+    const formatTime = (iso) => { try { return new Date(iso).toLocaleString(); } catch { return iso || ''; } };
+    const statusGroup = (status) => {
+      if (status === 'running') return 'active';
+      if (status === 'blocked' || status === 'paused' || status === 'failed') return 'attention';
+      if (status === 'queued') return 'queued';
+      return 'done';
+    };
+
+    function allowedActions(task) {
+      if (task.status === 'running') return ['pause', 'cancel'];
+      if (task.status === 'paused') return ['resume', 'cancel'];
+      if (task.status === 'blocked' || task.status === 'failed') return ['retry', 'cancel'];
+      if (task.status === 'queued') return ['cancel'];
+      return [];
+    }
+
+    function card(task) {
+      const progress = Number(task.progress || 0);
+      const actions = allowedActions(task).map(a => `<button data-action="${a}" data-task="${esc(task.task_id)}">${a}</button>`).join('');
+      return `<article class="card">
+        <div class="topline"><div class="title">${esc(task.title || task.task_id)}</div><span class="status ${esc(task.status)}">${esc(task.status)}</span></div>
+        <div class="meta">
+          <span class="taskid">${esc(task.task_id)}</span>
+          <span>负责人：${esc(task.owner || '—')}</span>
+          <span class="message">${esc(task.message || '暂无消息')}</span>
+          <span>更新：${esc(formatTime(task.updated_at))} · seq ${esc(task.last_sequence)}</span>
+        </div>
+        <div class="progress-wrap"><div class="progress-label"><span>进度</span><span>${Math.round(progress)}%</span></div><div class="progress"><div class="bar" style="width:${Math.max(0,Math.min(100,progress))}%"></div></div></div>
+        <div class="actions">${actions}</div>
+      </article>`;
+    }
+
+    function matches(task) {
+      const q = els.search.value.trim().toLowerCase();
+      const f = els.filter.value;
+      const haystack = [task.task_id, task.title, task.owner, task.status, task.message].join(' ').toLowerCase();
+      if (q && !haystack.includes(q)) return false;
+      if (f === 'all') return true;
+      if (f === 'active') return ['queued','running','blocked','paused'].includes(task.status);
+      return task.status === f;
+    }
+
+    function render() {
+      const groups = { active: [], attention: [], queued: [], done: [] };
+      [...state.tasks.values()].filter(matches).sort((a,b) => String(b.updated_at).localeCompare(String(a.updated_at))).forEach(task => groups[statusGroup(task.status)].push(task));
+      for (const name of Object.keys(groups)) {
+        const node = document.getElementById(name);
+        node.innerHTML = groups[name].length ? groups[name].map(card).join('') : '<div class="empty">暂无任务</div>';
+        document.getElementById(`count-${name}`).textContent = groups[name].length;
+      }
+      els.sequence.textContent = `seq ${state.lastSequence}`;
+      els.summary.textContent = `${state.tasks.size} tasks`;
+      document.querySelectorAll('[data-action]').forEach(btn => btn.addEventListener('click', () => sendAction(btn.dataset.task, btn.dataset.action)));
+    }
+
+    function setConnection(mode, label) {
+      els.dot.className = `dot ${mode}`;
+      els.connection.textContent = label;
+    }
+
+    function showToast(message) {
+      els.toast.textContent = message;
+      els.toast.style.display = 'block';
+      clearTimeout(els.toast._timer);
+      els.toast._timer = setTimeout(() => els.toast.style.display = 'none', 2600);
+    }
+
+    async function loadSnapshot() {
+      const res = await fetch('/api/tasks');
+      if (!res.ok) throw new Error(`snapshot ${res.status}`);
+      const data = await res.json();
+      state.lastSequence = data.last_sequence || 0;
+      state.tasks = new Map((data.tasks || []).map(task => [task.task_id, task]));
+      render();
+    }
+
+    async function sendAction(taskId, action) {
+      try {
+        const res = await fetch(`/api/tasks/${encodeURIComponent(taskId)}/actions`, { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({action, payload:{requested_from:'web'}}) });
+        if (!res.ok) throw new Error(`action ${res.status}`);
+        showToast(`已提交 ${action}：${taskId}`);
+      } catch (err) { showToast(`提交失败：${err.message}`); }
+    }
+
+    function connectSocket() {
+      clearTimeout(state.reconnectTimer);
+      clearInterval(state.pingTimer);
+      const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${scheme}://${location.host}/ws`);
+      state.socket = ws;
+      setConnection('', '连接中');
+
+      ws.onopen = () => {
+        setConnection('live', '实时连接');
+        state.pingTimer = setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.send('ping'); }, 20000);
+      };
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.kind === 'snapshot') {
+          state.lastSequence = Math.max(state.lastSequence, msg.last_sequence || 0);
+          (msg.tasks || []).forEach(task => state.tasks.set(task.task_id, task));
+        } else if (msg.kind === 'task_event' && msg.task) {
+          state.lastSequence = Math.max(state.lastSequence, msg.sequence || 0);
+          state.tasks.set(msg.task.task_id, msg.task);
+        } else if (msg.kind === 'action_acked') {
+          showToast(`操作已回执：${msg.action.action} / ${msg.action.status}`);
+        }
+        render();
+      };
+      ws.onclose = () => {
+        setConnection('offline', '已断开，重连中');
+        clearInterval(state.pingTimer);
+        state.reconnectTimer = setTimeout(connectSocket, 1500);
+      };
+      ws.onerror = () => ws.close();
+    }
+
+    els.search.addEventListener('input', render);
+    els.filter.addEventListener('change', render);
+    els.refresh.addEventListener('click', () => loadSnapshot().catch(err => showToast(err.message)));
+
+    loadSnapshot().then(connectSocket).catch(err => { showToast(`初始化失败：${err.message}`); connectSocket(); });
+  </script>
+</body>
+</html>
