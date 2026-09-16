@@ -6,8 +6,13 @@ from agentdock_board.client import BoardClient
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Emit a real task event to AgentDock Task Board 2.0")
-    parser.add_argument("event_type", help="created/running/progress/blocked/completed/failed/...")
+    parser = argparse.ArgumentParser(
+        description="Emit a real task event to AgentDock Task Board 2.0"
+    )
+    parser.add_argument(
+        "event_type",
+        help="created/running/progress/blocked/completed/failed/...",
+    )
     parser.add_argument("task_id")
     parser.add_argument("--title")
     parser.add_argument("--owner")
