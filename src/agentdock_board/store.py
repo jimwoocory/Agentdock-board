@@ -4,17 +4,18 @@ import json
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 
-TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+IMMUTABLE_TERMINAL_STATUSES = {"completed", "cancelled"}
 STATUS_BY_EVENT = {
     "created": "queued",
     "assigned": "queued",
     "running": "running",
     "resumed": "running",
+    "retrying": "running",
     "blocked": "blocked",
     "completed": "completed",
     "failed": "failed",
@@ -40,6 +41,17 @@ class Store:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
+
+    @staticmethod
+    def _ensure_column(
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def _init_db(self) -> None:
         with self._lock, self._connect() as conn:
@@ -84,13 +96,17 @@ class Store:
                     consumer TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     acked_at TEXT,
-                    result_json TEXT
+                    result_json TEXT,
+                    lease_until TEXT,
+                    claim_count INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_actions_status_created
                     ON actions(status, created_at);
                 """
             )
+            self._ensure_column(conn, "actions", "lease_until", "TEXT")
+            self._ensure_column(conn, "actions", "claim_count", "INTEGER NOT NULL DEFAULT 0")
 
     @staticmethod
     def _task_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -106,10 +122,8 @@ class Store:
             return None
         result = dict(row)
         result["payload"] = json.loads(result.pop("payload_json") or "{}")
-        result["result"] = (
-            json.loads(result.pop("result_json")) if result.get("result_json") else None
-        )
-        result.pop("result_json", None)
+        raw_result = result.pop("result_json", None)
+        result["result"] = json.loads(raw_result) if raw_result else None
         return result
 
     def append_event(self, event: dict[str, Any]) -> dict[str, Any]:
@@ -190,7 +204,7 @@ class Store:
         current_status = str((current or {}).get("status") or "queued")
         status = STATUS_BY_EVENT.get(event_type, current_status)
 
-        if current_status in TERMINAL_STATUSES and event_type not in {"message"}:
+        if current_status in IMMUTABLE_TERMINAL_STATUSES and event_type not in {"message"}:
             status = current_status
 
         progress_value = event.get("progress")
@@ -308,26 +322,34 @@ class Store:
         self,
         consumer: str = "agentdock",
         limit: int = 50,
+        lease_seconds: int = 30,
     ) -> list[dict[str, Any]]:
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        lease_until = (now + timedelta(seconds=max(5, lease_seconds))).isoformat()
+
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 rows = conn.execute(
                     """
                     SELECT * FROM actions
-                    WHERE status='pending' AND (consumer='' OR consumer=?)
+                    WHERE
+                        (status='pending' AND (consumer='' OR consumer=?))
+                        OR
+                        (status='claimed' AND lease_until IS NOT NULL AND lease_until <= ?)
                     ORDER BY created_at ASC
                     LIMIT ?
                     """,
-                    (consumer, limit),
+                    (consumer, now_iso, limit),
                 ).fetchall()
                 ids = [row["action_id"] for row in rows]
                 if ids:
                     placeholders = ",".join("?" for _ in ids)
                     conn.execute(
-                        f"UPDATE actions SET status='claimed', consumer=? "
-                        f"WHERE action_id IN ({placeholders})",
-                        (consumer, *ids),
+                        f"UPDATE actions SET status='claimed', consumer=?, lease_until=?, "
+                        f"claim_count=claim_count+1 WHERE action_id IN ({placeholders})",
+                        (consumer, lease_until, *ids),
                     )
                     rows = conn.execute(
                         f"SELECT * FROM actions WHERE action_id IN ({placeholders}) "
@@ -351,7 +373,7 @@ class Store:
             conn.execute(
                 """
                 UPDATE actions
-                SET status=?, acked_at=?, result_json=?
+                SET status=?, acked_at=?, result_json=?, lease_until=NULL
                 WHERE action_id=?
                 """,
                 (
