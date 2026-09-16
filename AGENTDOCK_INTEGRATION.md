@@ -4,6 +4,14 @@ This board must consume **real task-engine events**. Do not drive it with UI tim
 
 ## 1. Start the board
 
+### Windows
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\start_board.ps1
+```
+
+### Generic Python
+
 ```bash
 pip install -e .
 agentdock-board
@@ -11,31 +19,61 @@ agentdock-board
 
 Default endpoint: `http://127.0.0.1:8765`.
 
-## 2. Create one shared client
+Run the smoke test after startup:
+
+```bash
+python scripts/smoke_test.py
+```
+
+A successful run prints `SMOKE_OK` and the generated task id.
+
+## 2. Preferred AgentDock hook: TaskReporter
+
+Use the drop-in reporter at the real task lifecycle boundaries.
+
+```python
+from agentdock_board.integration import TaskReporter
+
+reporter = TaskReporter(
+    task_id=task.id,
+    title=task.title,
+    owner=task.owner,
+    metadata={"project": task.project_id},
+)
+
+reporter.created("task accepted")
+reporter.assigned(task.owner)
+reporter.running(progress=task.progress, message=task.current_step)
+reporter.progress(task.progress, task.current_step)
+```
+
+Blocked / paused / restored paths:
+
+```python
+reporter.blocked(task.block_reason)
+reporter.paused("paused from Task Board")
+reporter.resumed("execution restored")
+reporter.retrying("retry after worker recovery")
+```
+
+Terminal paths:
+
+```python
+reporter.completed("Final Review passed")
+reporter.failed(str(error))
+reporter.cancelled("cancelled by user")
+```
+
+`failed` is intentionally retryable. `completed` and `cancelled` are immutable terminal states in the read model.
+
+## 3. Low-level client API
+
+If AgentDock already owns its lifecycle/event abstraction, use `BoardClient` directly instead of `TaskReporter`.
 
 ```python
 from agentdock_board.client import BoardClient
 
 board = BoardClient()
-```
-
-## 3. Emit events at real task lifecycle boundaries
-
-When a task is created:
-
-```python
-board.emit(
-    task_id=task.id,
-    event_type="created",
-    title=task.title,
-    owner=task.owner,
-    metadata={"project": task.project_id},
-)
-```
-
-When execution starts:
-
-```python
 board.emit(
     task_id=task.id,
     event_type="running",
@@ -43,50 +81,7 @@ board.emit(
     owner=task.owner,
     progress=task.progress,
     message=task.current_step,
-)
-```
-
-When progress changes:
-
-```python
-board.emit(
-    task_id=task.id,
-    event_type="progress",
-    progress=task.progress,
-    message=task.current_step,
-)
-```
-
-When blocked:
-
-```python
-board.emit(
-    task_id=task.id,
-    event_type="blocked",
-    progress=task.progress,
-    message=task.block_reason,
-)
-```
-
-When finished:
-
-```python
-board.emit(
-    task_id=task.id,
-    event_type="completed",
-    progress=100,
-    message="Final Review passed",
-)
-```
-
-Failures must be explicit:
-
-```python
-board.emit(
-    task_id=task.id,
-    event_type="failed",
-    progress=task.progress,
-    message=str(error),
+    metadata={"project": task.project_id},
 )
 ```
 
@@ -97,7 +92,7 @@ If AgentDock already has an event id, pass it as `source_event_id`. The board us
 ```python
 board.emit(
     task_id=task.id,
-    event_type="progress",
+    event_type="running",
     source_event_id=engine_event.id,
     progress=engine_event.progress,
 )
@@ -105,16 +100,14 @@ board.emit(
 
 If omitted, the client generates a UUID. Stable IDs are preferred when the task engine retries delivery.
 
-## 5. Consume board actions
+## 5. Consume board actions with crash-safe leases
 
-The browser can create durable actions such as `pause`, `resume`, `retry`, and `cancel`.
+The browser can create durable `pause`, `resume`, `retry`, and `cancel` actions.
 
-AgentDock should run a small action-consumer loop in its existing task controller, not in the browser.
+Use `ActionWorker` inside AgentDock's controller process:
 
 ```python
-from agentdock_board.client import BoardClient
-
-board = BoardClient()
+from agentdock_board.integration import ActionWorker
 
 
 def execute_board_action(item):
@@ -135,11 +128,16 @@ def execute_board_action(item):
     return {"task_id": task.id, "action": action}
 
 
-for _ in board.consume_actions(execute_board_action, consumer="agentdock"):
-    pass
+worker = ActionWorker(
+    execute_board_action,
+    consumer="agentdock",
+    poll_interval=1.0,
+    lease_seconds=30,
+)
+worker.start_daemon()
 ```
 
-Run this from AgentDock's existing scheduler/event loop at a reasonable interval, or adapt it to the task engine's own polling mechanism.
+Actions are leased, not permanently removed when polled. If AgentDock dies after claiming one, the lease expires and a restored worker can claim it again. Successful or failed execution is finalized only after ACK.
 
 ## 6. Required production mapping
 
@@ -150,32 +148,35 @@ Wire these real transitions:
 | task inserted | `created` |
 | owner/agent selected | `assigned` |
 | executor starts | `running` |
-| step/progress changes | `progress` |
+| step/progress changes | `running` with `progress` |
 | waiting on dependency/user/tool | `blocked` |
 | paused | `paused` |
 | resumed | `resumed` |
+| retry begins | `retrying` |
 | success | `completed` |
-| exception / terminal error | `failed` |
+| exception/error | `failed` |
 | cancelled | `cancelled` |
 
-## 7. Hard acceptance test
+## 7. Real MediaGo acceptance test
 
-Use one **real MediaGo task** rather than a synthetic timer.
+Use one **real MediaGo task**, not a synthetic timer.
 
 Expected sequence:
 
 ```text
-created -> assigned -> running -> progress ... -> completed/failed
+created -> assigned -> running -> ... -> completed/failed
 ```
 
-Pass conditions:
+Required pass conditions:
 
-- `GET /api/health` shows `last_sequence > 0`.
-- `GET /api/tasks` contains the real task id.
-- The browser updates without refresh when progress changes.
-- Browser refresh keeps the task.
-- Board service restart keeps the task.
-- A board action appears in AgentDock and is ACKed.
+- `GET /api/health` reports `last_sequence > 0`.
+- `GET /api/tasks` contains the real MediaGo task id.
+- The browser updates without refresh when the current step/progress changes.
+- Refreshing the browser keeps the task.
+- Restarting Task Board 2.0 keeps the task because SQLite is persistent.
+- Pause/resume/retry/cancel from the board reaches AgentDock and gets ACKed.
+- Kill AgentDock after it claims an action; after lease expiry, restart it and verify that action is re-delivered.
+- A failed task can be retried and return to `running`.
 - No simulated percentage or fake status is generated by the board.
 
 ## 8. Deployment boundary
