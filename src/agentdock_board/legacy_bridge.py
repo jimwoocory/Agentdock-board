@@ -182,7 +182,15 @@ def normalize_snapshot(item: dict[str, Any]) -> dict[str, Any] | None:
     except (TypeError, ValueError):
         progress = None
 
-    marker = _pick(item, "last_sequence", "lastSequence", "sequence", "seq", "updated_at", "updatedAt")
+    marker = _pick(
+        item,
+        "last_sequence",
+        "lastSequence",
+        "sequence",
+        "seq",
+        "updated_at",
+        "updatedAt",
+    )
     if marker is None:
         marker = _stable_id("snapshot", item)
 
@@ -302,7 +310,9 @@ def follow_events(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Bridge legacy AgentDock live-task-board into Board 2.0")
+    parser = argparse.ArgumentParser(
+        description="Bridge legacy AgentDock live-task-board into Board 2.0"
+    )
     parser.add_argument("--legacy-dir", required=True)
     parser.add_argument("--board-url", default="http://127.0.0.1:8875")
     parser.add_argument("--interval", type=float, default=0.75)
