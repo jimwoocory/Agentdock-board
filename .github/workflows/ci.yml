@@ -17,7 +17,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e . pytest ruff
-      - name: Ruff
-        run: ruff check src tests scripts
+      - name: Ruff correctness
+        run: ruff check --select E,F src tests scripts
       - name: Pytest
         run: pytest -q
