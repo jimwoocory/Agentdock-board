@@ -35,18 +35,22 @@ def test_snapshot_normalizes_board_payload(monkeypatch) -> None:
     assert result["tasks"][0]["task_id"] == "tsk_demo"
 
 
-def test_chatgpt_http_uses_configured_transport(monkeypatch) -> None:
-    calls = {}
+def test_http_settings_normalize_path(monkeypatch) -> None:
     monkeypatch.setenv("AGENTDOCK_CHATGPT_MCP_HOST", "127.0.0.1")
     monkeypatch.setenv("AGENTDOCK_CHATGPT_MCP_PORT", "9988")
     monkeypatch.setenv("AGENTDOCK_CHATGPT_MCP_PATH", "chatgpt")
+
+    host, port, path = chatgpt_app._http_settings()
+
+    assert host == "127.0.0.1"
+    assert port == 9988
+    assert path == "/chatgpt"
+
+
+def test_chatgpt_http_uses_streamable_transport(monkeypatch) -> None:
+    calls = {}
     monkeypatch.setattr(chatgpt_app.mcp, "run", lambda **kwargs: calls.update(kwargs))
 
     chatgpt_app.run_http()
 
-    assert calls == {
-        "transport": "streamable-http",
-        "host": "127.0.0.1",
-        "port": 9988,
-        "streamable_http_path": "/chatgpt",
-    }
+    assert calls == {"transport": "streamable-http"}
