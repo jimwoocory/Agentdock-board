@@ -13,6 +13,7 @@ $ConfigFile = Join-Path $RunStateDir "secure-mcp-tunnel.json"
 $StdoutLog = Join-Path $RunStateDir "secure-mcp-tunnel.out.log"
 $StderrLog = Join-Path $RunStateDir "secure-mcp-tunnel.err.log"
 $PidFile = Join-Path $RunStateDir "secure-mcp-tunnel.pid"
+$DoctorJsonLog = Join-Path $RunStateDir "secure-mcp-tunnel-doctor.json"
 
 New-Item -ItemType Directory -Force -Path $InstallRoot, $DownloadDir, $RunStateDir | Out-Null
 
@@ -36,6 +37,30 @@ function Convert-SecureStringToPlainText([Security.SecureString]$SecureValue) {
     } finally {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
     }
+}
+
+function Write-DoctorFailureSummary($Report) {
+    Write-Host ""
+    Write-Host "[Secure MCP Tunnel] DOCTOR FAILED" -ForegroundColor Red
+    $failed = @($Report.checks | Where-Object { $_.status -eq "FAIL" })
+    if ($failed.Count -eq 0 -and $Report.failed_checks) {
+        Write-Host ("FAILED_CHECKS: " + (@($Report.failed_checks) -join ", ")) -ForegroundColor Red
+        return
+    }
+    foreach ($check in $failed) {
+        Write-Host ("FAIL: " + $check.id) -ForegroundColor Red
+        if ($check.summary) {
+            Write-Host ("  " + $check.summary)
+        }
+        if ($check.next) {
+            foreach ($next in @($check.next)) {
+                Write-Host ("  NEXT: " + $next) -ForegroundColor Yellow
+            }
+        }
+    }
+    Write-Host ""
+    Write-Host "Full doctor report:" -ForegroundColor Yellow
+    Write-Host "  $DoctorJsonLog"
 }
 
 Write-Host ""
@@ -153,9 +178,36 @@ try {
     }
 
     Write-Host "[5/6] Running tunnel doctor..."
-    & $tunnelExe doctor --profile $profile --explain
-    if ($LASTEXITCODE -ne 0) {
-        throw "tunnel-client doctor failed."
+    $doctorRaw = @(& $tunnelExe doctor --profile $profile --json 2>&1)
+    $doctorExit = $LASTEXITCODE
+    $doctorText = ($doctorRaw -join "`n").Trim()
+    if ($doctorText) {
+        Set-Content -Path $DoctorJsonLog -Value $doctorText -Encoding utf8
+    }
+
+    $doctorReport = $null
+    try {
+        if ($doctorText) {
+            $doctorReport = $doctorText | ConvertFrom-Json
+        }
+    } catch {
+        Write-Host "Doctor returned non-JSON output:" -ForegroundColor Yellow
+        Write-Host $doctorText
+    }
+
+    if ($doctorExit -ne 0) {
+        if ($doctorReport) {
+            Write-DoctorFailureSummary $doctorReport
+        }
+        throw "tunnel-client doctor failed with exit code $doctorExit."
+    }
+
+    if ($doctorReport) {
+        $skipped = @($doctorReport.checks | Where-Object { $_.status -eq "SKIP" })
+        foreach ($check in $skipped) {
+            Write-Host ("SKIP: " + $check.id + " - " + $check.summary) -ForegroundColor DarkGray
+        }
+        Write-Host "[5/6] Doctor OK" -ForegroundColor Green
     }
 
     if (Test-Path $PidFile) {
