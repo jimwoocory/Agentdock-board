@@ -56,23 +56,32 @@ $release = Invoke-RestMethod `
     -Uri "https://api.github.com/repos/openai/tunnel-client/releases/latest" `
     -Headers @{ "User-Agent" = "AgentDock-Board-2.0" }
 
+# Use the full client package. The runtime ZIP contains tunnel-client-runtime.exe
+# and does not provide the full init/doctor/profile CLI surface used below.
 $asset = $release.assets | Where-Object {
-    $_.name -match '^tunnel-client-runtime-v.+-windows-amd64\.zip$'
+    $_.name -match '^tunnel-client-v.+-windows-amd64\.zip$'
 } | Select-Object -First 1
 
 if (-not $asset) {
-    throw "Could not find the Windows amd64 tunnel-client runtime ZIP in the latest OpenAI release."
+    throw "Could not find the full Windows amd64 tunnel-client ZIP in the latest OpenAI release."
 }
 
 $version = [string]$release.tag_name
+$installMarker = "$version|full-client"
 $zipPath = Join-Path $DownloadDir $asset.name
 $versionMarker = Join-Path $ExtractRoot ".version"
-$currentVersion = ""
+$currentMarker = ""
 if (Test-Path $versionMarker) {
-    $currentVersion = (Get-Content $versionMarker -Raw -ErrorAction SilentlyContinue).Trim()
+    $currentMarker = (Get-Content $versionMarker -Raw -ErrorAction SilentlyContinue).Trim()
 }
 
-if ($currentVersion -ne $version -or -not (Test-Path $ExtractRoot)) {
+$existingTunnelExe = $null
+if (Test-Path $ExtractRoot) {
+    $existingTunnelExe = Get-ChildItem -Path $ExtractRoot -Recurse -File -Filter "tunnel-client.exe" `
+        -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+}
+
+if ($currentMarker -ne $installMarker -or -not $existingTunnelExe) {
     Write-Host "[2/6] Downloading $($asset.name)..."
     Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath
     if (Test-Path $ExtractRoot) {
@@ -80,15 +89,26 @@ if ($currentVersion -ne $version -or -not (Test-Path $ExtractRoot)) {
     }
     New-Item -ItemType Directory -Force -Path $ExtractRoot | Out-Null
     Expand-Archive -Path $zipPath -DestinationPath $ExtractRoot -Force
-    Set-Content -Path $versionMarker -Value $version -Encoding ascii
+
+    $tunnelExe = Get-ChildItem -Path $ExtractRoot -Recurse -File -Filter "tunnel-client.exe" `
+        -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+    if (-not $tunnelExe) {
+        $foundExecutables = @(Get-ChildItem -Path $ExtractRoot -Recurse -File -Filter "*.exe" `
+            -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+        throw "tunnel-client.exe was not found after extracting $($asset.name). Found executables: $($foundExecutables -join ', ')"
+    }
+    Set-Content -Path $versionMarker -Value $installMarker -Encoding ascii
 } else {
-    Write-Host "[2/6] tunnel-client $version is already installed."
+    Write-Host "[2/6] tunnel-client $version full client is already installed."
+    $tunnelExe = $existingTunnelExe
 }
 
-$tunnelExe = Get-ChildItem -Path $ExtractRoot -Recurse -File -Filter "tunnel-client.exe" |
-    Select-Object -First 1 -ExpandProperty FullName
 if (-not $tunnelExe) {
-    throw "tunnel-client.exe was not found after extraction."
+    $tunnelExe = Get-ChildItem -Path $ExtractRoot -Recurse -File -Filter "tunnel-client.exe" `
+        -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+}
+if (-not $tunnelExe) {
+    throw "tunnel-client.exe was not found after installation."
 }
 
 Write-Host "[3/6] Tunnel client ready: $tunnelExe"
@@ -181,6 +201,7 @@ try {
     $config = [ordered]@{
         version = "2.0"
         tunnel_client_version = $version
+        tunnel_client_flavor = "full-client"
         tunnel_id = $tunnelId
         profile = $profile
         mcp_server_url = $McpServerUrl
@@ -199,11 +220,10 @@ try {
     Write-Host "Config:     $ConfigFile"
     Write-Host ""
     Write-Host "Next in ChatGPT:" -ForegroundColor Cyan
-    Write-Host "  1. Open Settings -> Apps/Plugins and enable Developer mode."
-    Write-Host "  2. Create a developer app."
-    Write-Host "  3. Choose Connection = Tunnel."
-    Write-Host "  4. Select this tunnel or paste the Tunnel ID above."
-    Write-Host "  5. Scan tools and create the app."
+    Write-Host "  1. Open Plugins and click + to create a new plugin."
+    Write-Host "  2. Choose Connection = Tunnel."
+    Write-Host "  3. Select this tunnel or paste the Tunnel ID above."
+    Write-Host "  4. Scan tools and create the plugin."
 } finally {
     $env:CONTROL_PLANE_API_KEY = $null
     $env:CONTROL_PLANE_TUNNEL_ID = $null
