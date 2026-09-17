@@ -33,6 +33,18 @@ OPEN_TOOL_META: dict[str, Any] = {
     "openai/toolInvocation/invoked": "AgentDock 任务看板已打开。",
 }
 
+
+def _http_settings() -> tuple[str, int, str]:
+    host = os.getenv("AGENTDOCK_CHATGPT_MCP_HOST", "127.0.0.1")
+    port = int(os.getenv("AGENTDOCK_CHATGPT_MCP_PORT", "8767"))
+    path = os.getenv("AGENTDOCK_CHATGPT_MCP_PATH", "/mcp")
+    if not path.startswith("/"):
+        path = f"/{path}"
+    return host, port, path
+
+
+_MCP_HOST, _MCP_PORT, _MCP_PATH = _http_settings()
+
 mcp = FastMCP(
     "AgentDock Task Board 2.0",
     instructions=(
@@ -41,6 +53,9 @@ mcp = FastMCP(
         "status questions. This ChatGPT app surface is read-only."
     ),
     stateless_http=True,
+    host=_MCP_HOST,
+    port=_MCP_PORT,
+    streamable_http_path=_MCP_PATH,
 )
 client = BoardClient()
 
@@ -108,17 +123,7 @@ def taskboard_changes(after_sequence: int = 0, limit: int = 200) -> dict[str, An
 
 
 def run_http() -> None:
-    host = os.getenv("AGENTDOCK_CHATGPT_MCP_HOST", "127.0.0.1")
-    port = int(os.getenv("AGENTDOCK_CHATGPT_MCP_PORT", "8767"))
-    path = os.getenv("AGENTDOCK_CHATGPT_MCP_PATH", "/mcp")
-    if not path.startswith("/"):
-        path = f"/{path}"
-    mcp.run(
-        transport="streamable-http",
-        host=host,
-        port=port,
-        streamable_http_path=path,
-    )
+    mcp.run(transport="streamable-http")
 
 
 if __name__ == "__main__":
