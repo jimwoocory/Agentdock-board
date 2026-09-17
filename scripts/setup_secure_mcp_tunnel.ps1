@@ -14,6 +14,7 @@ $StdoutLog = Join-Path $RunStateDir "secure-mcp-tunnel.out.log"
 $StderrLog = Join-Path $RunStateDir "secure-mcp-tunnel.err.log"
 $PidFile = Join-Path $RunStateDir "secure-mcp-tunnel.pid"
 $DoctorJsonLog = Join-Path $RunStateDir "secure-mcp-tunnel-doctor.json"
+$HealthListenAddr = "127.0.0.1:0"
 
 New-Item -ItemType Directory -Force -Path $InstallRoot, $DownloadDir, $RunStateDir | Out-Null
 
@@ -66,6 +67,7 @@ function Write-DoctorFailureSummary($Report) {
 Write-Host ""
 Write-Host "AgentDock Task Board 2.0 - Secure MCP Tunnel" -ForegroundColor Cyan
 Write-Host "Local MCP: $McpServerUrl"
+Write-Host "Health listener: $HealthListenAddr (automatic free port)"
 Write-Host ""
 
 $uri = [Uri]$McpServerUrl
@@ -178,7 +180,10 @@ try {
     }
 
     Write-Host "[5/6] Running tunnel doctor..."
-    $doctorRaw = @(& $tunnelExe doctor --profile $profile --json 2>&1)
+    $doctorRaw = @(& $tunnelExe doctor `
+        --profile $profile `
+        --health.listen-addr $HealthListenAddr `
+        --json 2>&1)
     $doctorExit = $LASTEXITCODE
     $doctorText = ($doctorRaw -join "`n").Trim()
     if ($doctorText) {
@@ -231,7 +236,11 @@ try {
     Write-Host "[6/6] Starting Secure MCP Tunnel..."
     $process = Start-Process `
         -FilePath $tunnelExe `
-        -ArgumentList @("run", "--profile", $profile) `
+        -ArgumentList @(
+            "run",
+            "--profile", $profile,
+            "--health.listen-addr", $HealthListenAddr
+        ) `
         -WorkingDirectory $ExtractRoot `
         -RedirectStandardOutput $StdoutLog `
         -RedirectStandardError $StderrLog `
@@ -257,6 +266,7 @@ try {
         tunnel_id = $tunnelId
         profile = $profile
         mcp_server_url = $McpServerUrl
+        health_listen_addr = $HealthListenAddr
         pid = $process.Id
         executable = $tunnelExe
         started_at = (Get-Date).ToString("o")
@@ -268,6 +278,7 @@ try {
     Write-Host "Tunnel ID:  $tunnelId"
     Write-Host "Profile:    $profile"
     Write-Host "Local MCP:  $McpServerUrl"
+    Write-Host "Health:     $HealthListenAddr (automatic free port)"
     Write-Host "PID:        $($process.Id)"
     Write-Host "Config:     $ConfigFile"
     Write-Host ""
